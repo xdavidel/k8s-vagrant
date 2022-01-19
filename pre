@@ -1,0 +1,7 @@
+#!/bin/sh
+
+apt-get update
+
+apt-mark hold package grub-pc grub-pc-bin grub2-common grub-common
+
+apt-get dist-upgrade -y

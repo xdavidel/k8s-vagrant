@@ -1,0 +1,346 @@
+#+TITLE: K8s Configuration
+
+* Table of contents :toc:
+- [[#instructions][Instructions]]
+- [[#creating-helper-scripts][Creating helper scripts]]
+  - [[#common-scripts][Common Scripts]]
+  - [[#master-scripts][Master scripts]]
+  - [[#slave-scripts][Slave scripts]]
+- [[#creating-a-vagrantfile][Creating a Vagrantfile]]
+- [[#checking-the-resulted-cluster][Checking the resulted cluster]]
+  - [[#deploying-vagrant-configuration][Deploying vagrant configuration]]
+  - [[#ssh-into-the-master-node][ssh into the master node]]
+  - [[#ssh-into-ant-other-node][ssh into ant other node]]
+
+* Instructions
+
+All of the files in this repository are created by ~emacs~ using ~org-babel-tangle~.
+It is recommaneded to change this README file and generate the changes into the files.
+
+One can use the following to use ~org-babel-tangle~ from shell:
+
+#+begin_src shell
+emacs -Q "README.org" --batch -f org-babel-tangle
+#+end_src
+
+* Creating helper scripts
+
+** Common Scripts
+
+Those scripts are used to initialize the containers for the cluster.
+
+*** Pre run script
+
+Some pakcages like grub we want to hold back from updating.
+After that we'll update the kernel.
+
+**** Update apt registry.
+
+#+begin_src shell :tangle "pre"
+#!/bin/sh
+
+apt-get update
+#+end_src
+
+**** Stop those packages from being updated
+#+begin_src shell :tangle "pre"
+apt-mark hold package grub-pc grub-pc-bin grub2-common grub-common
+#+end_src
+
+**** Upgrade packages and kernel.
+#+begin_src shell :tangle "pre"
+apt-get dist-upgrade -y
+#+end_src
+
+
+*** Install docker
+
+**** Install packages to allow apt to use a repository over HTTPS.
+#+begin_src shell :tangle "install-docker"
+#!/bin/sh
+
+apt-get install -y apt-transport-https ca-certificates curl gnupg-agent software-properties-common
+#+end_src
+
+**** Add Docker apt repository.
+#+begin_src shell :tangle "install-docker"
+
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+apt-get update
+
+#+end_src
+
+**** Install Docker CE.
+#+begin_src shell :tangle "install-docker"
+
+apt-get install -y \
+  containerd.io=1.4.6-1 \
+  docker-ce=5:20.10.7~3-0~ubuntu-$(lsb_release -cs) \
+  docker-ce-cli=5:20.10.7~3-0~ubuntu-$(lsb_release -cs)
+
+#+end_src
+
+**** Setup docker daemon
+#+begin_src shell :tangle "install-docker"
+# Setup daemon.
+cat > /etc/docker/daemon.json <<EOF
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
+}
+EOF
+
+mkdir -p /etc/systemd/system/docker.service.d
+
+# Restart and enable docker service.
+systemctl daemon-reload
+systemctl start docker
+systemctl enable docker
+
+# Hold Docker at this specific version.
+apt-mark hold docker-ce
+#+end_src
+
+
+*** Install kubernetes tools
+
+**** Install packages to allow apt to use a repository over HTTPS
+#+begin_src shell :tangle "install-kube-tools"
+#!/bin/sh
+
+apt-get install -y apt-transport-https curl
+
+#+end_src
+
+**** Add Kubernetes apt repository.
+#+begin_src shell :tangle "install-kube-tools"
+
+## Download the Google Cloud public signing key
+curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
+
+## Add the Kubernetes apt repository
+echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+## Update apt package index with the new repository
+apt-get update
+
+#+end_src
+
+**** Install kubelet, kubeadm and kubectl.
+
+#+begin_src shell :tangle "install-kube-tools"
+
+apt-get install -y kubelet=1.21.2-00 kubeadm=1.21.2-00 kubectl=1.21.2-00
+
+# Hold the Kubernetes components at this specific version.
+apt-mark hold kubelet kubeadm kubectl
+
+#+end_src
+
+**** Turn off swap for kubeadm.
+#+begin_src shell :tangle "install-kube-tools"
+
+swapoff -a
+sed -i '/swap/d' /etc/fstab
+
+#+end_src
+
+
+*** Post run script
+
+#+begin_src shell :tangle "post"
+#!/bin/bash
+
+# Clear apt cache.
+apt-get clean
+
+# Cleanup disk.
+#dd if=/dev/zero of=/EMPTY bs=1M
+#rm -f /EMPTY
+
+# Clear bash history.
+cat /dev/null > ~/.bash_history && history -c && exit
+#+end_src
+
+
+*** Prepare kubectl
+
+#+begin_src shell :tangle "prepare-kubectl"
+
+#!/bin/sh
+
+# Prepare kubectl.
+sudo mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+#+end_src
+
+
+** Master scripts
+
+*** Initialize master
+#+begin_src shell :tangle "init-master-node"
+#!/bin/sh
+
+# Install kubernetes via kubeadm.
+kubeadm init --apiserver-advertise-address=$NODE_IP
+
+# Hostname -i must return a routable address on second (non-NATed) network interface.
+# @see http://kubernetes.io/docs/getting-started-guides/kubeadm/#limitations
+sed "s/127.0.0.1.*m/$NODE_IP m/" -i /etc/hosts
+
+# Export k8s cluster token to an external file.
+OUTPUT_FILE=/vagrant/join.sh
+rm -rf /vagrant/join.sh
+kubeadm token create --print-join-command > /vagrant/join.sh
+chmod +x $OUTPUT_FILE
+#+end_src
+
+
+*** Install CNI
+
+#+begin_src shell :tangle "install-cni"
+#!/bin/sh
+
+# Apply flannel.
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+#+end_src
+
+
+** Slave scripts
+
+*** Initialize slave
+
+#+begin_src shell :tangle "init-slave-node"
+#!/bin/sh
+
+# Join kubernetes cluster.
+/vagrant/join.sh
+echo "Environment='KUBELET_EXTRA_ARGS=--node-ip=$NODE_IP'" | tee -a /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+systemctl daemon-reload
+systemctl restart kubelet
+#+end_src
+
+
+*** Join kubernetes cluster
+
+#+begin_src shell :tangle "join"
+#!/bin/sh
+kubeadm join 10.0.0.101:6443 --token 6oh2pt.iq2504a10odtxteq --discovery-token-ca-cert-hash sha256:5965c2c844a903e595bfd49e8aecbfed0cc7e57098c72044d63e308715d42896
+#+end_src
+
+* Creating a Vagrantfile
+Use the text editor of your choice and create a file with named Vagrantfile, inserting the code below.
+The value of N denotes the number of nodes present in the cluster, it can be modified accordingly.
+In the below example, we are setting the value of N as 2.
+
+#+begin_src ruby :tangle "Vagrantfile"
+IMAGE_NAME="bento/ubuntu-18.04"
+MEMORY_SIZE_IN_GB=2
+CPU_COUNT=2
+MASTER_NODE_COUNT=1
+WORKER_NODE_COUNT=2
+MASTER_NODE_IP_START="10.0.0.10"
+WORKER_NODE_IP_START="10.0.0.20"
+
+Vagrant.configure("2") do |config|
+
+  # set variables
+  master_node_ip = ''
+  worker_node_ip = ''
+
+  config.vm.box = IMAGE_NAME
+
+  config.vm.provider "virtualbox" do |vb|
+
+    vb.memory = 1024 * MEMORY_SIZE_IN_GB
+    vb.cpus = CPU_COUNT
+
+  end
+
+  config.vm.provision "shell", path: "pre"
+
+  config.vm.provision "shell", path: "install-docker"
+  config.vm.provision "shell", path: "install-kube-tools"
+
+  config.vm.provision "shell", path: "post"
+
+  (1..MASTER_NODE_COUNT).each do |i|
+    config.vm.define "m" do |master|
+
+      master_node_ip = "#{MASTER_NODE_IP_START}#{i}"
+      master.vm.network "private_network", ip: "#{master_node_ip}"
+      master.vm.hostname = "m"
+
+      # init master node.
+      master.vm.provision "shell", path: "init-master-node", env: {"NODE_IP" => "#{master_node_ip}"}
+
+      # prepare kubectl for vagrant user
+      master.vm.provision "shell", privileged: false, path: "prepare-kubectl"
+
+      # prepare kubectl for root user
+      master.vm.provision "shell", privileged: true, path: "prepare-kubectl"
+
+      # install cni.
+      master.vm.provision "shell", path: "install-cni"
+
+    end
+  end
+
+  (1..WORKER_NODE_COUNT).each do |i|
+    config.vm.define "n#{i}" do |node|
+
+      worker_node_ip = "#{WORKER_NODE_IP_START}#{i}"
+      node.vm.network "private_network", ip: "#{worker_node_ip}"
+      node.vm.hostname = "n#{i}"
+
+      # init slave node.
+      node.vm.provision "shell", path: "init-slave-node", env: {"NODE_IP" => "#{worker_node_ip}"}
+
+    end
+  end
+end
+#+end_src
+
+* Checking the resulted cluster
+
+** Deploying vagrant configuration
+#+begin_src shell
+cd /path/to/Vagrantfile
+vagrant up m n1 n2
+#+end_src
+
+
+** ssh into the master node
+Upon completion of all the above steps, the Kubernetes cluster should be up and running.
+We can login to the master or worker nodes using Vagrant as follows:
+
+#+begin_src shell
+## Accessing master
+vagrant ssh m
+#+end_src
+
+We can check all the nodes through the master:
+
+#+begin_src shell
+
+vagrant@k8s-master:~$ kubectl get nodes -o wide
+NAME         STATUS   ROLES    AGE     VERSION
+k8s-master   Ready    master   18m     v1.13.3
+node-1       Ready    <none>   12m     v1.13.3
+node-2       Ready    <none>   6m22s   v1.13.3
+
+#+end_src
+
+
+** ssh into ant other node
+#+begin_src shell
+## Accessing nodes
+vagrant ssh n1
+vagrant ssh n2
+#+end_src

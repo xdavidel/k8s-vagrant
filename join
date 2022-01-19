@@ -1,0 +1,2 @@
+#!/bin/sh
+kubeadm join 10.0.0.101:6443 --token 6oh2pt.iq2504a10odtxteq --discovery-token-ca-cert-hash sha256:5965c2c844a903e595bfd49e8aecbfed0cc7e57098c72044d63e308715d42896
