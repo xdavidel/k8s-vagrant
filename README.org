@@ -330,10 +330,17 @@ We can check all the nodes through the master:
 #+begin_src shell
 
 vagrant@k8s-master:~$ kubectl get nodes -o wide
-NAME         STATUS   ROLES    AGE     VERSION
-k8s-master   Ready    master   18m     v1.13.3
-node-1       Ready    <none>   12m     v1.13.3
-node-2       Ready    <none>   6m22s   v1.13.3
+NAME   STATUS     ROLES                  AGE     VERSION
+m      Ready      control-plane,master   2d18h   v1.21.2
+n1     NotReady   <none>                 2d18h   v1.21.2
+n2     NotReady   <none>                 2d18h   v1.21.2
+
+
+vagrant@m:~$ kubectl get nodes -o wide
+NAME   STATUS     ROLES                  AGE     VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION       CONTAINER-RUNTIME
+m      Ready      control-plane,master   2d18h   v1.21.2   10.0.2.15     <none>        Ubuntu 18.04.6 LTS   4.15.0-163-generic   docker://20.10.7
+n1     NotReady   <none>                 2d18h   v1.21.2   10.0.0.201    <none>        Ubuntu 18.04.6 LTS   4.15.0-163-generic   docker://20.10.7
+n2     NotReady   <none>                 2d18h   v1.21.2   10.0.0.202    <none>        Ubuntu 18.04.6 LTS   4.15.0-163-generic   docker://20.10.7
 
 #+end_src
 
